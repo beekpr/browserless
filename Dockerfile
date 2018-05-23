@@ -7,7 +7,7 @@ ENV application_directory /usr/src/app
 ENV font_directory /usr/share/fonts/noto
 
 # Configuration for Chrome
-ENV CONNECTION_TIMEOUT=60000
+ENV CONNECTION_TIMEOUT=600000
 ENV CHROME_PATH=/usr/bin/google-chrome
 
 RUN mkdir -p $application_directory

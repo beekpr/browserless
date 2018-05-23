@@ -22,6 +22,7 @@ const thiryMinutes = 30 * 60 * 1000;
 const fiveMinute = 5 * 60 * 1000;
 const halfSecond = 500;
 const maxStats = 12 * 24 * 7; // 7 days @ 5-min intervals
+const urls = {};
 
 const chromeTarget = () => {
   var text = '';
@@ -45,7 +46,7 @@ const asyncMiddleware = (handler) => {
   }
 };
 
-const getCPUIdleAndTotal = ():ICPULoad => {
+const getCPUIdleAndTotal = (): ICPULoad => {
   let totalIdle = 0;
   let totalTick = 0;
 
@@ -177,7 +178,9 @@ export class Chrome {
       memoryUsage: 0,
     };
 
-    this.proxy = new httpProxy.createProxyServer();
+    this.proxy = new httpProxy.createProxyServer({
+
+    });
     this.proxy.on('error', function (err, _req, res) {
       if (res.writeHead) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -354,7 +357,7 @@ export class Chrome {
     );
   }
 
-  private async launchChrome(flags:string[] = [], retries:number = 1): Promise<puppeteer.Browser> {
+  private async launchChrome(flags: string[] = [], retries: number = 1): Promise<puppeteer.Browser> {
     const start = Date.now();
     debug('Chrome Starting');
     return puppeteer.launch({
@@ -470,7 +473,7 @@ export class Chrome {
 
       debug(`${req.url}: Inbound function execution: ${JSON.stringify({ code, context })}`);
 
-      const job:any = async () => {
+      const job: any = async () => {
         const browser = await this.launchChrome();
         const page = await browser.newPage();
 
@@ -513,7 +516,7 @@ export class Chrome {
     app.get('/json*', asyncMiddleware(async (req, res) => {
       const targetId = chromeTarget();
       const baseUrl = req.get('host');
-      const protocol = req.protocol.includes('s') ? 'wss': 'ws';
+      const protocol = req.protocol.includes('s') ? 'wss' : 'ws';
 
       debug(`${req.url}: JSON protocol request.`);
 
@@ -525,16 +528,17 @@ export class Chrome {
         type: 'page',
         url: 'about:blank',
         webSocketDebuggerUrl: `${protocol}://${baseUrl}${targetId}`
-     }]);
+      }]);
     }));
 
     return this.server = http
       .createServer(app)
-      .on('upgrade', asyncMiddleware(async(req, socket, head) => {
+      .on('upgrade', asyncMiddleware(async (req, socket, head) => {
         const parsedUrl = url.parse(req.url, true);
         const route = parsedUrl.pathname || '/';
         const queueLength = this.queue.length;
         const isMachineStrained = this.isMachineConstrained();
+        const uuid: string | undefined = String(parsedUrl.query.uuid);
 
         debug(`${req.url}: Inbound WebSocket request. ${this.queue.length} in queue.`);
 
@@ -558,26 +562,37 @@ export class Chrome {
           this.onQueued(req);
         }
 
-        const job:any = (done: () => {}) => {
+        const job: any = (done: () => {}) => {
           const flags = _.chain(parsedUrl.query)
             .pickBy((_value, param) => _.startsWith(param, '--'))
             .map((value, key) => `${key}${value ? `=${value}` : ''}`)
             .value();
 
           const canUseChromeSwarm = !flags.length && !!this.chromeSwarm.length;
-          const launchPromise = canUseChromeSwarm ? this.chromeSwarm.shift() : this.launchChrome(flags);
+          let launchPromise = canUseChromeSwarm ? this.chromeSwarm.shift() : this.launchChrome(flags);
+
+          if (uuid && urls[uuid]) {
+            launchPromise = puppeteer.connect({
+              browserWSEndpoint: urls[uuid]
+            })
+          }
 
           debug(`${req.url}: WebSocket upgrade.`);
 
           (launchPromise || this.launchChrome())
             .then(async (browser) => {
               const browserWsEndpoint = browser.wsEndpoint();
-
+              if(uuid){
+                urls[uuid] = browserWsEndpoint;
+              } 
               debug(`${req.url}: Chrome Launched.`);
 
               socket.on('close', () => {
                 debug(`${req.url}: Session closed, stopping Chrome. ${this.queue.length} now in queue`);
                 browser.close();
+                if(uuid){
+                  delete urls[uuid];
+                }
                 done();
               });
 
@@ -591,7 +606,7 @@ export class Chrome {
               if (this.debuggerScripts.has(route)) {
                 debug(`${req.url}: Executing prior-uploaded script.`);
 
-                const page:any = await browser.newPage();
+                const page: any = await browser.newPage();
                 const port = url.parse(browserWsEndpoint).port;
                 const pageLocation = `/devtools/page/${page._target._targetId}`;
                 const code = this.debuggerScripts.get(route);
